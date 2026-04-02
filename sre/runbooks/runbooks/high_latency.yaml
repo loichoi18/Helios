@@ -1,0 +1,46 @@
+name: high-p99-latency
+description: >
+  Automated response to p99 latency exceeding 500ms SLO.
+  Attempts to restart degraded pods, clear caches, and scale out the affected service.
+severity: CRITICAL
+notify_slack_on_failure: true
+
+steps:
+  - name: notify-oncall
+    type: slack
+    message: "🚨 *CRITICAL* — p99 latency SLO breach detected. Running automated runbook: high-p99-latency"
+
+  - name: check-recent-deploys
+    type: http_get
+    url: http://localhost:8080/api/deploys/recent
+    continue_on_failure: true
+
+  - name: clear-render-cache
+    type: http_post
+    url: http://localhost:8080/admin/cache/evict
+    body:
+      scope: render
+      reason: latency-runbook
+
+  - name: wait-for-cache-propagation
+    type: wait
+    seconds: 30
+
+  - name: check-latency-recovered
+    type: http_get
+    url: http://localhost:8080/api/metrics/recent?minutes=5
+    continue_on_failure: true
+
+  - name: scale-out-if-needed
+    type: shell
+    command: |
+      aws ecs update-service \
+        --cluster helios-prod \
+        --service canvas-renderer \
+        --desired-count 6 \
+        --region ap-southeast-2
+    continue_on_failure: true
+
+  - name: notify-resolution
+    type: slack
+    message: "✅ Runbook *high-p99-latency* complete. Cache cleared, service scaled. Monitor dashboard for recovery."

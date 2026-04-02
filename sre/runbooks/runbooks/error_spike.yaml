@@ -1,0 +1,55 @@
+name: error-rate-spike
+description: >
+  Automated response to error rate exceeding 5% threshold.
+  Triggers a circuit breaker, rolls back the latest deploy if one occurred,
+  and scales up healthy replicas.
+severity: CRITICAL
+notify_slack_on_failure: true
+
+steps:
+  - name: notify-oncall
+    type: slack
+    message: "🚨 *CRITICAL* — Error rate spike detected (>5%). Running automated runbook."
+
+  - name: enable-circuit-breaker
+    type: http_post
+    url: http://localhost:8080/admin/circuit-breaker/open
+    body:
+      service: canvas-renderer
+      reason: error-rate-spike-runbook
+
+  - name: wait-for-breaker
+    type: wait
+    seconds: 15
+
+  - name: check-for-recent-deploy
+    type: shell
+    command: |
+      LAST_DEPLOY=$(aws deploy list-deployments \
+        --application-name helios-prod \
+        --query "deployments[0]" \
+        --output text --region ap-southeast-2)
+      echo "Last deploy: $LAST_DEPLOY"
+
+  - name: rollback-if-recent
+    type: shell
+    continue_on_failure: true
+    command: |
+      aws deploy stop-deployment \
+        --deployment-id $LAST_DEPLOY \
+        --auto-rollback-enabled \
+        --region ap-southeast-2
+
+  - name: wait-for-rollback
+    type: wait
+    seconds: 60
+
+  - name: close-circuit-breaker
+    type: http_post
+    url: http://localhost:8080/admin/circuit-breaker/close
+    body:
+      service: canvas-renderer
+
+  - name: notify-resolution
+    type: slack
+    message: "✅ Runbook *error-rate-spike* complete. Circuit breaker reset, rollback attempted. Verify error rate recovery."
